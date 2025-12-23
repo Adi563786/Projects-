@@ -34,6 +34,12 @@ def handmarks(frame):
     with vision.HandLandmarker.create_from_options(options) as landmarker:
         result = landmarker.detect(mp_image)
         return result,HAND_CONNECTIONS
+if __name__=="__main__":
+    im=cv2.imread(r"C:\Projects-aditya\abcs.jpg")
+    res,_=handmarks(im)
+    for i,j in zip(res.handedness,res.hand_landmarks):
+        print(i)
+        print(j)
     #     h, w, _ = frame.shape
     #     for hand_landmarks,handedness in zip(result.hand_landmarks,result.handedness):
     #         # Convert normalized landmarks to pixel coords
