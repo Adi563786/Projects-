@@ -1,56 +1,52 @@
 import cv2
 from ultralytics import YOLO
 from mp_hand import handmarks
-from landmark_converter_and_classification import is_hand_combined
-from landmark_converter_and_classification import landmark_convert_to_list
+from landmark_converter_and_classification import (
+    is_hand_combined,
+    landmark_convert_to_list,
+    classify_mudra_using_image
+)
 
-vid = r"C:\Projects-aditya\ladki2.mp4"
+vid = r"C:\Projects-aditya\ladki.mp4"
 person_model_path = r"person_best.pt"
+
 person = YOLO(person_model_path)
-cap = cv2.VideoCapture(vid)
+cap = cv2.VideoCapture(0)
 
+# ---------------- STATE ----------------
 prev_landmarks = {"Left": None, "Right": None}
+previous_mediapipe_landmarks = {"Left": None, "Right": None}
 missing_count = {"Left": 0, "Right": 0}
-previous_mediapipe_landmarks={"Left":None,"Right":None}
+margin=40 #pixel
+MAX_MISSING = 3
+alpha = 0.7
 
-MAX_MISSING = 3  # persist for up to 3 frames if lost
-
-alpha = 0.7      # smoothing factor
-
-frame_width = 640
-frame_height = 480
-
+# ---------------- MAIN LOOP ----------------
 while cap.isOpened():
     ret, frame = cap.read()
     if not ret:
         break
-    #frame = cv2.resize(frame, (640, 640))
+    frame=cv2.resize(frame,(1500,800))
     humans = person.predict(source=frame, imgsz=640, conf=0.80)
 
     for h in humans:
         if h.boxes is None:
-            cv2.imshow("Video Frame",frame)
             continue
 
-        l, b = h.orig_shape
+        frame_h, frame_w = h.orig_shape
 
-        for _, box in enumerate(h.boxes.xywh):
+        for box in h.boxes.xywh:
             xc, yc, bw, bh = box.tolist()
-            bw += 0.1 * b
-            bh += 0.1 * l
-            x1 = int(xc - bw / 2)
-            y1 = int(yc - bh / 2)
-            x2 = int(xc + bw / 2)
-            y2 = int(yc + bh / 2)
 
-            # Clamp to image boundaries
-            x1 = max(0, x1)
-            y1 = max(0, y1)
-            x2 = min(b, x2)
-            y2 = min(l, y2)
+            bw += 0.1 * frame_w
+            bh += 0.1 * frame_h
 
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color=(0, 0, 255), thickness=2)
-            cv2.circle(frame, (int(xc), int(yc)), radius=5, color=(255, 0, 0), thickness=-1)
+            x1 = max(0, int(xc - bw / 2))
+            y1 = max(0, int(yc - bh / 2))
+            x2 = min(frame_w, int(xc + bw / 2))
+            y2 = min(frame_h, int(yc + bh / 2))
+
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
 
             crop = frame[y1:y2, x1:x2]
             if crop.size == 0:
@@ -61,74 +57,154 @@ while cap.isOpened():
 
             detected_labels = []
 
-            for hand_landmarks, handedness in zip(result.hand_landmarks, result.handedness):
+            # ---------------- HAND PROCESSING ----------------
+            for hand_landmarks, handedness in zip(
+                result.hand_landmarks, result.handedness
+            ):
                 hand_label = handedness[0].category_name
                 detected_labels.append(hand_label)
 
-                # Convert landmarks to original frame coordinates
-                landmark_points = [(int(lm.x * crop_w + x1), int(lm.y * crop_h + y1)) for lm in hand_landmarks]
+                # Convert to frame coords
+                curr_points = [
+                    (
+                        int(lm.x * crop_w + x1),
+                        int(lm.y * crop_h + y1)
+                    )
+                    for lm in hand_landmarks
+                ]
 
-                # Smoothing
-                prev = prev_landmarks[hand_label]
-                prev_mediapipe_landmarks=previous_mediapipe_landmarks[hand_label]
-                if prev is None or len(prev) != len(landmark_points):
-                    smoothed = landmark_points
-                    pml=landmark_convert_to_list(hand_landmarks)
+                # -------- SMOOTHING (PIXEL SPACE) --------
+                prev_points = prev_landmarks[hand_label]
+                if prev_points is None:
+                    smoothed_points = curr_points
                 else:
-                    smoothed = [(int(alpha * cx + (1 - alpha) * px),
-                                 int(alpha * cy + (1 - alpha) * py))
-                                for (cx, cy), (px, py) in zip(landmark_points, prev)]
-                    pml=[((alpha*cx+(1-alpha)*px),(alpha*cy+(1-alpha)*py),(alpha*cz+(1-alpha)*pz))
-                         for (cx,cy,cz),(px,py,pz) in zip(prev_mediapipe_landmarks,landmark_convert_to_list(hand_landmarks))]
+                    smoothed_points = [
+                        (
+                            int(alpha * cx + (1 - alpha) * px),
+                            int(alpha * cy + (1 - alpha) * py),
+                        )
+                        for (cx, cy), (px, py) in zip(curr_points, prev_points)
+                    ]
 
-                prev_landmarks[hand_label] = smoothed
-                previous_mediapipe_landmarks[hand_label]=pml
-                missing_count[hand_label] = 0  # reset missing counter
-                landmark_points = smoothed
+                prev_landmarks[hand_label] = smoothed_points
+                missing_count[hand_label] = 0
 
-                # Draw landmarks and connections
-                for start, end in HAND_CONNECTIONS:
-                    cv2.line(frame, landmark_points[start], landmark_points[end], color=(0, 255, 0), thickness=2)
-                for (x, y) in landmark_points:
-                    cv2.circle(frame, (x, y), radius=4, color=(0, 0, 255), thickness=-1)
+                # -------- SMOOTHING (MEDIAPIPE SPACE) --------
+                curr_mp = landmark_convert_to_list(hand_landmarks)
+                prev_mp = previous_mediapipe_landmarks[hand_label]
 
-                # Draw hand label
-                (text_w, text_h), _ = cv2.getTextSize(hand_label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-                wx, wy = landmark_points[0]
-                cv2.rectangle(frame, (wx - 5, wy - text_h - 15), (wx + text_w + 5, wy - 5), (0, 0, 0), -1)
-                cv2.putText(frame, hand_label, (wx, wy - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                if prev_mp is None:
+                    smoothed_mp = curr_mp
+                else:
+                    smoothed_mp = [
+                        (
+                            alpha * cx + (1 - alpha) * px,
+                            alpha * cy + (1 - alpha) * py,
+                            alpha * cz + (1 - alpha) * pz,
+                        )
+                        for (cx, cy, cz), (px, py, pz) in zip(curr_mp, prev_mp)
+                    ]
 
-            # Handle vanished hands
+                previous_mediapipe_landmarks[hand_label] = smoothed_mp
+
+                # # -------- DRAW HAND --------
+                # for start, end in HAND_CONNECTIONS:
+                #     cv2.line(
+                #         frame,
+                #         smoothed_points[start],
+                #         smoothed_points[end],
+                #         (0, 255, 0),
+                #         2,
+                #     )
+
+                # for x, y in smoothed_points:
+                #     cv2.circle(frame, (x, y), 4, (0, 0, 255), -1)
+
+                # wx, wy = smoothed_points[0]
+                # cv2.putText(
+                #     frame,
+                #     hand_label,
+                #     (wx, wy - 10),
+                #     cv2.FONT_HERSHEY_SIMPLEX,
+                #     0.6,
+                #     (255, 255, 255),
+                #     2,
+                # )
+
+            # ---------------- HANDLE LOST HANDS ----------------
             for label in ["Left", "Right"]:
                 if label not in detected_labels:
                     if prev_landmarks[label] is not None:
                         missing_count[label] += 1
-                        if missing_count[label] <= MAX_MISSING:
-                            landmark_points = prev_landmarks[label]
-                            for start, end in HAND_CONNECTIONS:
-                                cv2.line(frame, landmark_points[start], landmark_points[end], color=(0, 255, 0), thickness=2)
-                            for (x, y) in landmark_points:
-                                cv2.circle(frame, (x, y), radius=4, color=(0, 0, 255), thickness=-1)
-                        else:
+                        if missing_count[label] > MAX_MISSING:
                             prev_landmarks[label] = None
-                            previous_mediapipe_landmarks[label]=None
+                            previous_mediapipe_landmarks[label] = None
                             missing_count[label] = 0
-            # handle detection of single hand or combined  hand and classification
-            print("2 hand ",is_hand_combined(previous_mediapipe_landmarks["Left"],previous_mediapipe_landmarks["Right"]))
-            if is_hand_combined(previous_mediapipe_landmarks["Left"],previous_mediapipe_landmarks["Right"]):
-                if prev_landmarks["Left"] and prev_landmarks["Right"]:
-                    xcord=[x[0] for x in prev_landmarks["Left"]]+[x[0] for x in prev_landmarks["Right"]]
-                    ycord=[y[1] for y in prev_landmarks["Left"]]+[y[1] for y in prev_landmarks["Right"]]
-                    lx,hx=max(0,min(xcord)-20),max(xcord)+20
-                    ly,hy=max(0,min(ycord)-20),max(ycord)+20
-                    cv2.rectangle(frame, (lx,ly), (hx,hy), (0, 0, 0), -1)
 
-        cv2.imshow("Video Frame", frame)
-        
-        # Exit on pressing 'q'
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+            # ---------------- MUDRA CLASSIFICATION ----------------
+            left_mp = previous_mediapipe_landmarks.get("Left")
+            right_mp = previous_mediapipe_landmarks.get("Right")
 
-# Release resources
+            combined = False
+            if left_mp is not None and right_mp is not None:
+                combined,distance = is_hand_combined(left_mp, right_mp)
+
+            # -------- TWO HAND MUDRA --------
+            if combined:
+                full_landmark = [left_mp, right_mp]
+
+                xcord = (
+                    [p[0] for p in prev_landmarks["Left"]]
+                    + [p[0] for p in prev_landmarks["Right"]]
+                )
+                ycord = (
+                    [p[1] for p in prev_landmarks["Left"]]
+                    + [p[1] for p in prev_landmarks["Right"]]
+                )
+
+                lx, hx = max(0, min(xcord) - margin), max(xcord) + margin
+                ly, hy = max(0, min(ycord) - margin), max(ycord) + margin
+                crop_img=frame[ly:hy,lx:hx]
+                label, conf = classify_mudra_using_image(crop_img)
+                if conf>=0.5:
+                    cv2.rectangle(frame, (lx, ly), (hx, hy), (0, 0, 0), 2)
+                    cv2.putText(
+                        frame,
+                        f"{label} {conf:.2f} {distance}",
+                        (lx, ly - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (255, 255, 255),
+                        2,
+                    )
+
+            # -------- SINGLE HAND MUDRA --------
+            elif not combined:
+                for side in ["Left", "Right"]:
+                    if prev_landmarks[side] and previous_mediapipe_landmarks[side]:
+                        xcord = [p[0] for p in prev_landmarks[side]]
+                        ycord = [p[1] for p in prev_landmarks[side]]
+
+                        lx, hx = max(0, min(xcord) - margin), max(xcord) + margin
+                        ly, hy = max(0, min(ycord) - margin), max(ycord) + margin
+                        #print(frame.shape,ly,hy,lx,hx)
+                        crop_img=frame[ly:hy,lx:hx]
+                        label, conf = classify_mudra_using_image(crop_img)
+                        if conf>=0.5:
+                            cv2.rectangle(frame, (lx, ly), (hx, hy), (0, 0, 0), 2)
+                            cv2.putText(
+                                frame,
+                                f"{label} {conf:.2f}",
+                                (lx, ly - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.6,
+                                (255, 255, 255),
+                                2,
+                            )
+
+    cv2.imshow("Video Frame", frame)
+    if cv2.waitKey(1) & 0xFF == ord("q"):
+        break
+
 cap.release()
 cv2.destroyAllWindows()
