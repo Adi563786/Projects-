@@ -1,0 +1,8 @@
+__pycache__/
+benv/
+__pycache__/
+
+*.mp4
+*.avi
+runs/
+*.jpg
