@@ -86,17 +86,24 @@ async def get_page_details(page):
     elements = await page.evaluate("""
 () => {
 
-    const isVisible = (el) => {
-        const style = window.getComputedStyle(el);
-        const rect = el.getBoundingClientRect();
+            const isVisibleInViewport = (el) => {
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
 
-        return (
-            style.visibility !== "hidden" &&
-            style.display !== "none" &&
-            rect.width > 0 &&
-            rect.height > 0
-        );
-    };
+            const isRendered =
+                style.visibility !== "hidden" &&
+                style.display !== "none" &&
+                rect.width > 0 &&
+                rect.height > 0;
+
+            const isInViewport =
+                rect.bottom > 0 &&
+                rect.right > 0 &&
+                rect.top < window.innerHeight &&
+                rect.left < window.innerWidth;
+
+            return isRendered && isInViewport;
+        };
 
     const interactive = `
         button,
@@ -107,6 +114,7 @@ async def get_page_details(page):
         option,
         summary,
         details,
+        p,h1,h2,h3,h,h4,h5,h6,
         [role],
         [tabindex],
         [contenteditable="true"]
@@ -115,7 +123,7 @@ async def get_page_details(page):
     const nodes = [...document.querySelectorAll(interactive)];
 
     return nodes
-        .filter(el => isVisible(el))
+        .filter(el => isVisibleInViewport(el))
         .map((el, i) => {
 
             if (!el.hasAttribute("data-agent-id")) {
@@ -150,7 +158,27 @@ async def get_page_details(page):
                 case "a":
                     actions = ["click"];
                     break;
-
+                case "p":
+                    actions = ["read text"];
+                    break;
+                case "h1":
+                    actions = ["read text"];
+                    break;
+                case "h2":
+                    actions = ["read text"];
+                    break;
+                case "h3":
+                    actions = ["read text"];
+                    break;
+                case "h4":
+                    actions = ["read text"];
+                    break;
+                case "h5":
+                    actions = ["read text"];
+                    break;
+                case "h6":
+                    actions = ["read text"];
+                    break;
                 default:
                     actions = ["click"];
             }
@@ -163,7 +191,13 @@ async def get_page_details(page):
                 tag: el.tagName.toLowerCase(),
 
                 text: (el.innerText || "").trim(),
-
+                p:(el.p|| "").trim(),
+                h1:(el.h1|| "").trim(),
+                h2:(el.h2|| "").trim(),
+                h3:(el.h3|| "").trim(),
+                h4:(el.h4|| "").trim(),
+                h5:(el.h5|| "").trim(),
+                h6:(el.h6|| "").trim(),
                 placeholder: el.placeholder || "",
 
                 value: el.value || "",
@@ -198,15 +232,7 @@ async def get_page_details(page):
 
                 actions,
 
-                bbox: {
-                    x: Math.round(rect.x),
-                    y: Math.round(rect.y),
-                    width: Math.round(rect.width),
-                    height: Math.round(rect.height),
-
-                    centerX: Math.round(rect.left + rect.width/2),
-                    centerY: Math.round(rect.top + rect.height/2)
-                }
+                
             };
         });
 }
@@ -214,7 +240,12 @@ async def get_page_details(page):
 
     grouped = defaultdict(dict)
 
+    TEXT_TAGS = {"p", "h1", "h2", "h3", "h4", "h5", "h6"}
+
     for e in elements:
+
+        # Allow more text for readable/content elements
+        text_limit = 400 if e["tag"] in TEXT_TAGS else 40
 
         summary_parts = [
 
@@ -225,20 +256,37 @@ async def get_page_details(page):
             f'tag={e["tag"]}' if e["tag"] else "",
             f'type={e["type"]}' if e["type"] else "",
 
-            f'text="{e["text"][:40]}"' if e["text"] else "",
-            f'name="{e["name"][:40]}"' if e["name"] else "",
-            f'domId="{e["domId"]}"' if e["domId"] else "",
-            f'className="{e["className"]}"' if e["className"] else "",
-            f'href="{e["href"]}"' if e["href"] else "",
-            f'enabled="{e["enabled"]}"' if e["enabled"] else "",
-            f'checked="{e["checked"]}"' if e["checked"] else "",
-            f'selected="{e["selected"]}"' if e["selected"] else "",
-            f'required="{e["required"]}"' if e["required"] else "",
+            f'text="{e["text"][:text_limit]}"'
+                if e["text"] else "",
+
+            f'name="{e["name"][:40]}"'
+                if e["name"] else "",
+
+            f'domId="{e["domId"]}"'
+                if e["domId"] else "",
+
+            f'className="{e["className"]}"'
+                if e["className"] else "",
+
+            f'href="{e["href"]}"'
+                if e["href"] else "",
+
+            f'enabled="{e["enabled"]}"'
+                if e["enabled"] else "",
+
+            f'checked="{e["checked"]}"'
+                if e["checked"] else "",
+
+            f'selected="{e["selected"]}"'
+                if e["selected"] else "",
+
+            f'required="{e["required"]}"'
+                if e["required"] else "",
 
             f'placeholder="{e["placeholder"][:40]}"'
                 if e["placeholder"] else "",
 
-            f'aria="{e["ariaLabel"][:40]}"'
+            f'aria="{e["ariaLabel"][:200]}"'
                 if e["ariaLabel"] else "",
 
             f'value="{e["value"][:30]}"'
@@ -246,7 +294,7 @@ async def get_page_details(page):
 
             f'actions={",".join(e["actions"])}',
 
-            f'pos=({e["bbox"]["centerX"]},{e["bbox"]["centerY"]})'
+          
         ]
 
         e["summary"] = "< " + ", ".join(
@@ -256,13 +304,16 @@ async def get_page_details(page):
         grouped[e["role"]][e["id"]] = e
 
     return grouped
+
 async def get_locators(page, element, ids):
     role = ""
+    if isinstance(ids,int):
+        ids=str(ids)
     for k, v in element.items():
         if ids in v.keys():
             role = k
             break
-
+    
     v = element[role][ids]
     locators = []
 
@@ -399,65 +450,59 @@ def cosine_sim(a, b):
     return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
 
 
+from collections import defaultdict
+
 def get_k_relevant_elements(task, elements, embedder, top_k=15):
     """
-    Returns the globally most relevant elements.
+    Returns top_k most relevant elements PER ROLE.
 
-    elements:
+    Example:
     {
-        "button": {
-            0: {...},
-            1: {...}
-        },
-        "input": {
-            2: {...}
-        }
+        "button": { ... top_k buttons ... },
+        "input": { ... top_k inputs ... },
+        "a": { ... top_k links ... },
     }
     """
 
-    flat_elements = []
+    if not elements:
+        return {}
 
-    # Flatten all roles
+    task_embedding = embedder.encode([task])[0]
+    result = defaultdict(dict)
+
     for role, items in elements.items():
+        role_elements = []
+
         for idx, el in items.items():
             summary = el.get("summary", "").strip()
 
             if not summary:
                 continue
 
-            flat_elements.append({
-                "role": role,
+            role_elements.append({
                 "index": idx,
                 "summary": summary,
                 "element": el,
             })
 
-    if not flat_elements:
-        return {}
+        if not role_elements:
+            continue
 
-    # Encode everything in one batch
-    texts = [x["summary"] for x in flat_elements]
+        # Encode all elements of this role together
+        texts = [item["summary"] for item in role_elements]
+        embeddings = embedder.encode(texts)
 
-    task_embedding = embedder.encode([task])[0]
-    element_embeddings = embedder.encode(texts)
+        scored = []
 
-    scored = []
+        for info, emb in zip(role_elements, embeddings):
+            score = cosine_sim(task_embedding, emb)
+            scored.append((score, info))
 
-    for info, emb in zip(flat_elements, element_embeddings):
-        score = cosine_sim(task_embedding, emb)
-        scored.append((score, info))
+        # Highest relevance first
+        scored.sort(key=lambda x: x[0], reverse=True)
 
-    scored.sort(key=lambda x: x[0], reverse=True)
-
-    # Keep global top-k
-    scored = scored[:top_k]
-
-    # Group back by role
-    result = defaultdict(dict)
-
-    for score, info in scored:
-        el = info["element"].copy()
-        summ=el['summary']
-        result[info["role"]][info["index"]] = summ
+        # Keep top_k for THIS role
+        for score, info in scored[:top_k]:
+            result[role][info["index"]] = info["summary"]
 
     return dict(result)

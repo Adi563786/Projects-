@@ -59,6 +59,12 @@ class OpenVINOChatModel(BaseChatModel):
 
         return str(content)
     def _generate_sync(self,inputs):
+        input_ids = inputs["input_ids"]
+
+        # Total input tokens
+        input_token_count = input_ids.shape[-1]
+
+        print(f"Input token count: {input_token_count}")
         streamer=TextStreamer(
             self._processor.tokenizer,skip_prompt=True,skip_special_tokens=True,
         )
@@ -67,27 +73,6 @@ class OpenVINOChatModel(BaseChatModel):
         )
     
     def _build_prompt(self,messages,prompt):
-        
-        # if self._tools:
-        #     prompt+="\n Available tools \n"
-        #     for tool in self._tools:
-        #         prompt+=f"""
-        #                 Tool:
-        #                 Name: {tool.name}
-        #                 Description:{tool.description}
-        #                 Arguments:{tool.args}\n
-        #                 """
-        #     prompt+="""If a tool is required output ONLY JSON .
-                
-        #         Example:
-        #         {"actions"=[
-        #             {
-        #                 "action":"click",
-        #                 "index":25
-        #             }
-        #         ]}
-        #         otherwise answer normally.
-        #         """
         conversation = []
         if isinstance(self._model,OVModelForCausalLM):
             for msg in messages:            
@@ -117,13 +102,21 @@ class OpenVINOChatModel(BaseChatModel):
             return conversation ,[]
         else:
             conversation = []
-
             all_images = []
 
+            if prompt:
+                conversation.append({
+                    "role": "system",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": prompt,
+                        }
+                    ],
+                })
+
             for msg in messages:
-
                 if isinstance(msg, HumanMessage):
-
                     text, images = self.extract_content(msg.content)
 
                     content = []
@@ -131,64 +124,64 @@ class OpenVINOChatModel(BaseChatModel):
                     for img in images:
                         content.append({
                             "type": "image",
-                            "image": img
+                            "image": img,
                         })
                         all_images.append(img)
 
-                    content.append({
-                        "type": "text",
-                        "text": text + "\n" + prompt
-                    })
+                    if text:
+                        content.append({
+                            "type": "text",
+                            "text": text,
+                        })
 
                     conversation.append({
                         "role": "user",
-                        "content": content
+                        "content": content,
                     })
 
                 elif isinstance(msg, AIMessage):
-
                     conversation.append({
-                        "role":"assistant",
-                        "content":[
+                        "role": "assistant",
+                        "content": [
                             {
-                                "type":"text",
-                                "text":self.to_text(msg.content)
+                                "type": "text",
+                                "text": self.to_text(msg.content),
                             }
-                        ]
+                        ],
                     })
 
                 elif isinstance(msg, ToolMessage):
-
                     text, images = self.extract_content(msg.content)
-                    
+
                     content = []
-                    
+
                     for img in images:
                         content.append({
                             "type": "image",
-                            "image": img
+                            "image": img,
                         })
                         all_images.append(img)
-                    
-                    content.append({
-                        "type": "text",
-                        "text": text 
-                    })
-                    
-                    conversation.append({
-                        "role": "user",
-                        "content": content
-                    })
-                elif isinstance(msg, SystemMessage):
+
+                    if text:
+                        content.append({
+                            "type": "text",
+                            "text": text,
+                        })
 
                     conversation.append({
-                        "role":"system",
-                        "content":[
+                        "role": "user",
+                        "content": content,
+                    })
+
+                elif isinstance(msg, SystemMessage):
+                    conversation.append({
+                        "role": "system",
+                        "content": [
                             {
-                                "type":"text",
-                                "text":msg.content
+                                "type": "text",
+                                "text": msg.content,
                             }
-                        ]
+                        ],
                     })
 
             return conversation, all_images
@@ -223,7 +216,6 @@ class OpenVINOChatModel(BaseChatModel):
 
         # ----- your existing parsing code -----
         cleaned_output = output.split("</think>")[-1].strip()
-
         if cleaned_output.startswith("```"):
             cleaned_output = cleaned_output.strip()
             if cleaned_output.startswith("```json"):

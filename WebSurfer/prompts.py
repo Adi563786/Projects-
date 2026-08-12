@@ -1,247 +1,68 @@
-# def get_action_prompts(task, url, title, elements, mutation_prompt=""):
-#     is_continuation = bool(mutation_prompt.strip())
-#     if mutation_prompt:return mutation_prompt
-#     state_banner = (
-#         "This is a CONTINUATION after the DOM changed mid-execution. "
-#         "The mutation context below tells you what remains to be done."
-#         if is_continuation
-#         else "This is the FIRST planning pass for this page. No actions have been taken yet."
-#     )
 
-#     return """You are an autonomous browser agent operating in a continuous
-# OBSERVE → DECIDE → ACT → OBSERVE loop.
+def get_page_purpose_prompt(
+    task,
+    url,
+    title,
+    elements,
+    previous_page_tasks=None,
+):
+    previous_page_tasks = previous_page_tasks or []
 
-# Your responsibility is to choose the NEXT executable action that makes progress toward the USER TASK.
+    return f"""
+You determine the NEXT LOGICAL STEP on the current page.
 
-# You do not have unrestricted access to the webpage. Base every decision exclusively on:
+MAIN TASK:
+{task}
 
-# 1. The USER TASK.
-# 2. The CURRENT PAGE.
-# 3. The CURRENT AVAILABLE ELEMENTS.
-# 4. The MUTATION CONTEXT, when present.
-# 5. Visual information returned by observation tools.
+PREVIOUS COMPLETED PAGE TASKS:
+{previous_page_tasks}
 
-# ========================
-# USER TASK
-# =========
+CURRENT PAGE:
+URL: {url}
+Title: {title}
 
-# {task}
+VISIBLE ELEMENTS:
+{elements}
 
-# ========================
-# EXECUTION STATE
-# ===============
+Rules:
 
-# {state_banner}
+1. Prefer information already visible on the page.
+   If visible content contains the answer needed by MAIN TASK, instruct
+   reading/extracting it instead of navigating elsewhere.
 
+2. Never repeat a completed previous task.
 
+3. Describe the COMPLETE logical step, not an isolated UI action.
 
-# ========================
-# CURRENT PAGE
-# ============
+4. For search:
+   - if a search query still needs to be performed and a search input exists,
+     say:
+     Enter "<exact query>" in the search box and submit the search.
+   - NEVER say only:
+     "Click the search button."
+   - Clicking Search without entering the query is not a valid search task.
 
-# URL:
-# {url}
+5. If search results already exist, do not search again.
+   Instruct opening the first relevant organic result.
 
-# Title:
-# {title}
+6. If the destination page is already open, do not click links that merely
+   reopen the same page.
 
-# ========================
-# CURRENT AVAILABLE ELEMENTS
-# ==========================
+7. Use only controls/content actually present in VISIBLE ELEMENTS.
 
-# {elements}
+8. Preserve query/entity spelling from MAIN TASK when text must be entered.
 
-# ========================
-# AVAILABLE PAGE ACTIONS
-# ======================
+Return valid json with response in  ONE short instruction sentence only.
+{{
+  'pageTask':'response'
+}}
+""".strip()
 
-# * type
-# * click
-# * get_text
 
-# ========================
-# OBSERVATION TOOLS
-# =================
 
-# * get_screenshot()
-#   Use this when the element required for the next action is not present or cannot be identified confidently from CURRENT AVAILABLE ELEMENTS.
-
-# * scroll_mouse(pixels)
-#   Use this when the required content is probably outside the visible viewport.
-#   Use a positive value to scroll down and a negative value to scroll up.
-
-# After using an observation tool, wait for the updated screenshot, page state, and CURRENT AVAILABLE ELEMENTS before deciding on a page action.
-
-# ========================
-# DECISION POLICY
-# ===============
-
-# 1. First determine what portion of the USER TASK has already been completed.
-
-# 2. Decide only the next immediately executable action. Do not generate a fixed sequence for the entire task.
-
-# 3. Every page action must be grounded in CURRENT AVAILABLE ELEMENTS.
-
-# 4. Before returning an action, verify all of the following:
-
-#    * The index appears literally in CURRENT AVAILABLE ELEMENTS.
-#    * The element type supports the action.
-#    * The element is relevant to the remaining task.
-#    * The action is currently executable.
-
-# 5. Never invent, predict, copy, or reuse an index.
-
-# 6. Indices shown in examples, earlier pages, earlier plans, screenshots, or mutation history are invalid unless they also appear in CURRENT AVAILABLE ELEMENTS.
-
-# 7. Action compatibility:
-
-#    * "type" may target only an input, textarea, textbox, searchbox, combobox with editable text, or contenteditable element.
-#    * "click" may target only a clickable element such as a button, link, checkbox, menu item, tab, or submit control.
-#    * "get_text" may target only an element containing relevant page content.
-
-# 8. A form is a container, not automatically a text input. Do not type into or click a form unless its metadata explicitly shows that it is an actionable control and doing so is necessary.
-
-# 9. If the next required element is absent from CURRENT AVAILABLE ELEMENTS:
-
-#    * Do not guess its index.
-#    * Call get_screenshot().
-#    * If the screenshot indicates that the element is outside the viewport, call scroll_mouse().
-#    * Re-evaluate only after receiving an updated observation.
-
-# 10. A screenshot can help identify what is visible, but it does not create a valid element index. Do not produce an indexed page action until the target is present in CURRENT AVAILABLE ELEMENTS.
-
-# 11. When multiple editable elements exist, prefer an element whose role, label, name, placeholder, or accessible name indicates "Search".
-
-# 12. For a search task:
-
-# * Find a valid search input from the current elements.
-# * Type the search query derived from the USER TASK.
-# * Reobserve the page.
-# * Submit using a currently available submit control or Enter behavior supported by the executor.
-# * Reobserve the search-results page.
-# * Identify the first organic result from the current elements.
-# * Click that result.
-# * Reobserve the destination page.
-# * Extract only text relevant to the USER TASK.
-
-# This is task reasoning, not a mandatory fixed action sequence. Skip steps already completed and adapt to the actual page state.
-
-# 13. Do not treat advertisements, navigation menus, image-search links, AI-mode controls, privacy links, or unrelated page controls as the first organic result.
-
-# 14. When extracting text:
-
-# * Use get_text only with a current valid index.
-# * Prefer the main article, introductory paragraph, summary, or other directly relevant content.
-# * Scroll and reobserve if relevant content is not currently available.
-# * Do not return unrelated navigation, footer, cookie, or advertisement text.
-
-# 15. If an action changes the page or DOM, stop the current plan after that action unless later actions are unquestionably valid in the same unchanged observation. Reobservation is preferred.
-
-# 16. If the task has already been completed, return:
-
-# {"actions":[]}
-
-# ========================
-# ACTION OUTPUT
-# =============
-
-# ========================
-# OUTPUT CONTRACT
-# ===============
-
-# Return ONLY one valid JSON object. Do not include Markdown or explanations.
-
-# Choose exactly one of these response types:
-
-# 1. PAGE ACTION
-
-# Use this only when the required target exists in CURRENT AVAILABLE ELEMENTS.
-
-# {
-# "actions": [
-# {
-# "action": "type | click | get_text",
-# "index": "<existing current index>",
-# "text": "<required only for type>"
-# }
-# ]
-# }
-
-# 2. OBSERVATION TOOL CALL
-
-# Use this when the required element or content cannot be identified from CURRENT AVAILABLE ELEMENTS.
-
-# To inspect the visible page:
-
-# {
-# "tool_calls": [
-# {
-# "name": "get_screenshot",
-# "args": {}
-# }
-# ]
-# }
-
-# To inspect content outside the current viewport:
-
-# {
-# "tool_calls": [
-# {
-# "name": "scroll_mouse",
-# "args": {
-# "pixels": 600
-# }
-# }
-# ]
-# }
-
-# Use a positive `pixels` value to scroll down and a negative value to scroll up.
-
-# 3. TASK COMPLETE
-
-# {
-# "actions": []
-# }
-
-# ========================
-# TOOL-CALL RULES
-# ===============
-
-# 1. Return either `actions` or `tool_calls`, never both.
-
-# 2. If the necessary element is absent, ambiguous, hidden, or not represented by a valid current index, return a tool call. Never invent an index.
-
-# 3. Use `get_screenshot` when visual inspection may clarify the page.
-
-# 4. Use `scroll_mouse` when the required element or content is likely outside the viewport.
-
-# 5. After requesting a screenshot or scroll, stop. Wait for the executor to run the tool and provide refreshed page elements.
-
-# 6. Tool arguments must contain only JSON-serializable values.
-
-# 7. Never include the Playwright `page` object in tool arguments. The executor supplies it automatically.
-
-# 8. A screenshot does not create a valid DOM index. After taking a screenshot, page actions remain prohibited until the refreshed CURRENT AVAILABLE ELEMENTS contains a valid target index.
-
-# 9. Before returning an indexed action, verify:
-
-#    * The index appears literally in CURRENT AVAILABLE ELEMENTS.
-#    * The element supports the selected action.
-#    * The element is relevant to the unfinished task.
-
-# 10. Return valid JSON using double quotes, not Python dictionaries with single quotes.
-
-# ========================
-# FINAL VALIDATION
-# ================
-
-# Before returning a page action, construct the set of indices present in CURRENT AVAILABLE ELEMENTS and confirm that every selected index belongs to that set.
-
-# If any selected index is missing or the element type is incompatible, discard the action and observe the page instead.
-
-# """
 
 def get_action_prompts(
+    original_task,
     task,
     url,
     title,
@@ -254,11 +75,10 @@ def get_action_prompts(
     is_continuation = bool(mutation_prompt.strip())
 
     execution_state = (
-        "CONTINUATION: the page or DOM changed. "
-        "Use MUTATION CONTEXT to determine what remains unfinished."
+        "CONTINUATION: use mutation context to determine what remains unfinished."
         if is_continuation
         else
-        "FIRST PASS: no browser actions have been completed yet."
+        "FIRST PASS: no browser actions completed yet."
     )
 
     mutation_context = mutation_prompt.strip() or "None"
@@ -270,273 +90,230 @@ def get_action_prompts(
     )
 
     return f"""
-You are an autonomous browser agent operating in an:
+You are an autonomous browser agent using:
 
 OBSERVE -> DECIDE -> ACT -> OBSERVE
 
-loop.
+Return ONLY the next action/observation needed to progress.
+Use only this prompt and attached screenshots.
+Never invent or reuse old element indices.
 
-Your job is to return only the NEXT action or observation required to make
-progress toward the USER TASK.
+USER TASK:
+{original_task}
 
-Use only information provided in this prompt and any attached screenshot.
-Never reuse or invent element indices.
-
-========================
-USER TASK
-========================
-
+PAGE TASK:
 {task}
 
-========================
-EXECUTION STATE
-========================
-
+STATE:
 {execution_state}
 
 MUTATION CONTEXT:
 {mutation_context}
 
-========================
-CURRENT PAGE
-========================
-
+CURRENT PAGE:
 URL: {url}
 Title: {title}
-
-Scroll position: {scroll_y}
-Viewport height: {viewport_height if viewport_height is not None else "Unknown"}
-Document height: {document_height if document_height is not None else "Unknown"}
+Scroll: {scroll_y}
+Viewport: {viewport_height}
+Document height: {document_height}
 Can scroll down: {can_scroll_down}
 
-========================
-CURRENT AVAILABLE ELEMENTS
-========================
-
+CURRENT ELEMENTS:
 {elements}
 
-========================
-AVAILABLE OPERATIONS
-========================
-
-Page actions:
+AVAILABLE ACTIONS:
 - click
 - type
-- press_key
 - get_text
+- press_key: Enter | Tab | Escape | ArrowDown | ArrowUp
 
-press_key format:
-
-{{
-  "action": "press_key",
-  "key": "Enter | Tab | Escape | ArrowDown | ArrowUp"
-}}
-
-Use press_key when: submitting a search, submitting a form, selecting an
-autocomplete option, navigating menus, or confirming dialogs. Never press a
-key unrelated to the current task.
-
-Observation tools:
+TOOLS:
 - get_screenshot
 - scroll_mouse
 
-========================
-DECISION POLICY
-========================
+====================
+DECISION RULES
+====================
 
-Follow this order:
+1. Determine the NEXT UNFINISHED STEP.
+2. Determine what the CURRENT PAGE already represents.
+3. Find a CURRENT element that directly advances that step.
+4. If a clear valid element exists, ACT on it immediately.
+5. Never repeat a completed step just because its controls remain visible.
+6. Screenshot only if current elements are insufficient/ambiguous.
+7. Scroll only if the target is absent, may be outside the viewport, and
+   scrolling is possible.
+8. If complete, return {{"actions":[]}}.
 
-1. Determine the next unfinished step of the USER TASK.
+CURRENT PAGE STATE overrides generic workflow.
 
-2. Search CURRENT AVAILABLE ELEMENTS for the required target, matching by:
-   visible text, placeholder, aria/accessibility label, name, role/type,
-   href, title, or nearby context.
+Example:
+If search results already exist, do NOT search again.
+If the destination page is already open, continue extracting information.
+PAGE TASK is planning guidance, not an unconditional command.
 
-3. If one current element clearly matches the target, return the page action
-   immediately.
+Before following PAGE TASK, validate it against:
+1. MAIN USER TASK
+2. CURRENT PAGE
+3. CURRENT ELEMENTS
 
-4. Request get_screenshot only when CURRENT AVAILABLE ELEMENTS are
-   insufficient or ambiguous. Do not request the same screenshot again for
-   an unchanged URL and viewport.
+If PAGE TASK describes only part of a required operation, complete the
+logical operation correctly.
 
-5. If a screenshot is attached:
-   - inspect it before requesting another observation;
-   - use it to understand layout, labels, dialogs, overlays, grouping,
-     icons, visual state, and nearby text;
-   - match the visually identified target back to CURRENT AVAILABLE
-     ELEMENTS;
-   - if a matching current element exists, return the action using its
-     CURRENT index;
-   - never derive an index from screenshot coordinates.
+Example:
+If PAGE TASK says to search and the query has not been entered yet,
+typing the query must happen before submission.
 
-6. Scroll only when the required target is absent from CURRENT AVAILABLE
-   ELEMENTS, not visible in an available screenshot, Can scroll down is
-   True, and relevant content may reasonably exist below the viewport. Do
-   not repeat a scroll that caused no movement.
+Never click a Search/Submit button on an empty or incorrect search field
+when the task requires entering a query first.
+====================
+ELEMENT GROUNDING
+====================
 
-7. Return BLOCKED when the screenshot clearly shows the required target but
-   CURRENT AVAILABLE ELEMENTS contains no matching element, the target
-   remains ambiguous after visual inspection, or the target cannot be found
-   and the page cannot scroll farther.
+Every indexed action MUST use an index literally present in CURRENT ELEMENTS.
 
-8. If the USER TASK is already complete, return: {{"actions": []}}
+Never use indices from:
+- previous pages
+- previous observations
+- screenshots
+- examples
+- memory
 
-========================
-ACTION GROUNDING RULES
-========================
+Action must be supported by element metadata:
+- type -> actions contains "type"
+- click -> actions contains "click"
+- get_text -> readable/relevant text element
 
-Every type, click, or get_text action MUST use an index that appears
-literally in CURRENT AVAILABLE ELEMENTS. Never use an index from a previous
-page, an earlier observation, mutation history, a screenshot, an example, or
-an earlier action plan.
+Match targets using:
+text, href, role, tag, aria, placeholder, name, title, value, className,
+page title, URL, order, and context.
 
-Action compatibility:
+Minor spelling/capitalization differences are acceptable when the intended
+target is clear from combined evidence.
 
-type: input, textarea, textbox, searchbox, editable combobox,
-contenteditable element
+====================
+SEARCH RULES
+====================
 
-click: button, link, checkbox, radio button, menu item, tab, submit
-control, or another explicitly clickable element
+Before typing into a search field, check whether relevant results ALREADY
+exist.
 
-get_text: an element containing information relevant to the USER TASK
+IF relevant results exist:
+- DO NOT search again.
+- choose the first organic, existing, relevant result.
+- prefer a real destination/content link over:
+  search/query links, suggestions, navigation, create/edit links,
+  missing/dead links, ads, pagination, or unrelated links.
+- click its CURRENT index.
+- STOP and re-observe after navigation.
 
-A form is a container and should not be typed into or clicked unless its
-metadata explicitly shows that it is actionable.
+IF relevant results do NOT exist:
+- find the current editable search field.
+- type the query and submit it IN THE SAME response:
+  type -> Search button, OR type -> Enter.
+- STOP after submission and re-observe.
 
-========================
+A type action on a search field without submission in the same action list
+is INVALID.
+
+"First result" means the first valid organic relevant destination, not
+necessarily the first similarly named link.
+
+Do not search again merely to fix a minor spelling variation when a clear
+matching result already exists.
+SEARCH INVARIANT:
+
+When a new search is required:
+
+1. Find the editable search input.
+2. Check its current value.
+3. If it does not already contain the required query:
+   type the required query.
+4. Submit using Search button or Enter.
+
+If typing and submission can be safely performed without re-observation,
+return both in the same actions list.
+
+Never submit a search before ensuring the required query is present.
+====================
 ACTION SEQUENCING
-========================
+====================
 
-Return the smallest executable action sequence that makes real progress.
-A single action is common, but whenever every later action is guaranteed to
-remain valid without re-observing the page first, batch them together in one
-"actions" list instead of stopping early. Typing into a search box and then
-submitting it is exactly this case — do not stop after "type" alone.
+Return the smallest useful executable sequence.
 
-Good sequences (safe to batch):
-- Click input -> Type text
-- Type into search box -> Press Enter
-- Click dropdown -> Press ArrowDown -> Press Enter
+Batch only actions guaranteed valid before any page mutation.
 
-Bad sequences (the page may change between steps — return these one action
-at a time instead):
-- Click search result -> Click article
-- Click Login -> Type password
-- Type -> Wait -> Click result
+Safe:
+- click input -> type
+- type search -> Enter
+- type search -> click known Search button
+- dropdown -> ArrowDown -> Enter
 
-Never predict an action that depends on a page update you haven't observed
-yet. Some tasks (search, login, form submission, sending a message, applying
-filters) require multiple actions across separate turns: return only the
-next executable action each time, and expect to be asked again once the
-browser state refreshes.
+Do NOT batch across navigation/page updates.
 
-========================
-SEARCH TASKS
-========================
+After clicking a result, submitting a form/search, or another likely page
+mutation: STOP and re-observe.
 
-All rules for search-type tasks are collected here.
+Never click a link whose href equals the current URL unless explicitly needed.
 
-Steps:
-1. Find a current editable search element (an input/searchbox whose label,
-   placeholder, name, or accessible name indicates search).
-2. If the input is not already focused, click it first (batch with the next
-   step if safe).
-3. Type the search query AND submit it IN THE SAME RESPONSE, as one
-   "actions" list — do not return "type" by itself and stop:
-   - if a visible Search/Submit button exists, follow it with a "click" on
-     that button;
-   - otherwise follow it with press_key Enter:
-     {{"action": "press_key", "key": "Enter"}}
-   A search is not complete until either Enter is pressed or a Search/Submit
-   control is clicked, and both the typing and the submission belong in
-   this one response whenever the submit target is already known.
-4. Stop and wait for the refreshed results page before continuing.
-5. On the results page, find the first organic result. Ignore
-   advertisements, navigation links, image-search links, AI-mode controls,
-   privacy links, and unrelated controls.
-6. Click the first organic result using its CURRENT index.
-7. On the destination page, extract only text relevant to the USER TASK.
-   If relevant content is not visible, request a screenshot, then scroll if
-   needed.
+====================
+CONTENT EXTRACTION
+====================
 
-Submission shorthand by starting state:
-- Input unfocused: click -> type -> press Enter
-- Input already focused: type -> press Enter
-- Visible Search/Submit button exists: click input (optional) -> type ->
-  click Search button
+When the destination page is open:
+- locate only information needed for USER TASK;
+- prefer the smallest/directly relevant readable element;
+- use get_text;
+- screenshot/scroll only if required content is unavailable.
 
-Example — click then type (safe to batch, no page change expected between
-them):
+====================
+OBSERVATION / BLOCKED
+====================
 
-{{
-  "actions": [
-    {{"action": "click", "index": "11"}},
-    {{"action": "type", "index": "11", "text": "Albert Einstein"}}
-  ]
-}}
+Request screenshot when structured elements cannot resolve the target.
 
-Example — type into the search box AND submit it in the same response
-(the standard shape for a search with no visible submit button; do not
-return "type" alone and stop here):
+Request scroll only when:
+- target is absent;
+- it may exist outside viewport;
+- scrolling is possible.
 
-{{
-  "actions": [
-    {{"action": "type", "index": "2", "text": "Albert Einstein"}},
-    {{"action": "press_key", "key": "Enter"}}
-  ]
-}}
+Do not screenshot/scroll when a clear actionable target already exists.
 
-Example — submit with Enter alone (used when typing already happened in a
-previous turn and only submission remains):
+Return BLOCKED only when the target cannot be resolved or found.
 
-{{
-  "actions": [
-    {{"action": "press_key", "key": "Enter"}}
-  ]
-}}
+====================
+OUTPUT
+====================
 
-========================
-OUTPUT CONTRACT
-========================
+Return exactly ONE JSON object. No Markdown or explanation.
 
-Return exactly ONE valid JSON object. No Markdown, explanations, reasoning,
-or additional text.
-
-1. PAGE ACTION
-
+PAGE ACTION:
 {{
   "actions": [
     {{
-      "action": "type | click | get_text | press_key",
-      "index": "<current element index, omit for press_key>",
-      "text": "<required only for type>",
-      "key": "<required only for press_key>"
+      "action": "click | type | get_text | press_key",
+      "index": "<CURRENT index; omit for press_key>",
+      "text": "<type only>",
+      "key": "<press_key only>"
     }}
   ]
 }}
 
-Omit fields that don't apply to the chosen action.
-
-2. SCREENSHOT REQUEST
-
+SCREENSHOT:
 {{
   "tool_calls": [
-    {{"name": "get_screenshot", "args": {{}}}}
+    {{"name":"get_screenshot","args":{{}}}}
   ]
 }}
 
-3. SCROLL REQUEST
-
+SCROLL:
 {{
   "tool_calls": [
-    {{"name": "scroll_mouse", "args": {{"pixels": 600}}}}
+    {{"name":"scroll_mouse","args":{{"pixels":600}}}}
   ]
 }}
 
-Use a positive value to scroll down, negative to scroll up.
-
-4. BLOCKED
-
+BLOCKED:
 {{
   "blocked": {{
     "reason": "visible_element_missing_from_current_elements | ambiguous_element_match | required_content_not_found",
@@ -544,386 +321,99 @@ Use a positive value to scroll down, negative to scroll up.
   }}
 }}
 
-5. TASK COMPLETE
+COMPLETE:
+{{"actions":[]}}
 
-{{"actions": []}}
-
-========================
+====================
 FINAL CHECK
-========================
+====================
 
-Before returning an indexed action, verify:
-- the index exists in CURRENT AVAILABLE ELEMENTS;
-- the element supports the action;
-- the element matches the intended target;
-- the action advances the unfinished task.
+Before returning:
+- index exists in CURRENT ELEMENTS;
+- action is supported;
+- target matches unfinished task;
+- action advances the task;
+- completed steps are not repeated;
+- search is not restarted if results already exist;
+- search typing includes submission;
+- navigation-dependent actions are not batched.
 
-If validation fails:
-- request a screenshot if one has not been provided for this viewport;
-- otherwise scroll if appropriate and possible;
-- otherwise return BLOCKED.
+Most important rule:
 
-Return only the JSON object.
+IF THE NEXT TARGET ALREADY EXISTS IN CURRENT ELEMENTS, USE IT.
+DO NOT RESTART THE WORKFLOW.
 """.strip()
 
-# def get_mutation_prompt(task, incompleted, completed, actions, elements):
 
-#     def describe_intent(action):
-#         action_type = action.get("action")
+def get_task_completion_prompt(original_task, completed_summary):
+    return f"""
+You are an autonomous browser agent's completion-checking module.
 
-#         if action_type == "click":
-#             return (
-#                 "CLICK GOAL: Perform the same semantic click intended by the old action. "
-#                 "The old element index is STALE. Find the correct CURRENT element by "
-#                 "matching its role, text, label, placeholder, href, and purpose. "
-#                 f"Do NOT reuse old index {action.get('index')}."
-#             )
+Your ONLY job is to decide whether the ORIGINAL USER QUERY has been fully
+satisfied by the work already done, based strictly on the evidence given
+below. Do not assume anything was done that isn't stated.
 
-#         elif action_type == "type":
-#             return (
-#                 f'TYPE GOAL: Type "{action.get("text", "")}" into the appropriate '
-#                 "editable element. The old index is STALE. Find the correct CURRENT "
-#                 "editable element and use its current index."
-#             )
+========================
+ORIGINAL USER QUERY
+========================
 
-#         elif action_type == "get_text":
-#             return (
-#                 "GET_TEXT GOAL: Extract the required text from the appropriate CURRENT "
-#                 "element. Find the relevant current element and use its current index."
-#             )
+{original_task}
 
-#         elif action_type == "press_key":
-#             return (
-#                 f'PRESS_KEY GOAL: Press the keyboard key "{action.get("key", "")}". '
-#                 "This action does NOT require an element index. "
-#                 "Do NOT replace it with a click, type, or get_text action. "
-#                 "Preserve the press_key action unless the task state clearly shows "
-#                 "that the key press is no longer required."
-#             )
+========================
+COMPLETED WORK SO FAR
+========================
 
-#         return (
-#             f"REMAINING GOAL: Preserve the semantic intent of this action: {action}. "
-#             "Only remap an element index if this action actually requires an element."
-#         )
+Each entry below describes one page that was visited: its title, the
+specific task attempted on that page, and the outcome of that attempt.
 
-#     remaining_descriptions = [
-#         describe_intent(action)
-#         for action in incompleted
-#     ]
+{completed_summary}
 
-#     return f"""
-# You are recovering a browser action plan after the page or DOM changed.
+========================
+HOW TO DECIDE
+========================
 
-# Your job is NOT to create a new plan from scratch.
+1. Break the ORIGINAL USER QUERY into what it actually requires — a query
+   can ask for more than one thing (e.g. "find X and tell me Y about it"
+   requires both finding X and extracting Y, not just one of them).
 
-# Your job is to continue ONLY the unfinished actions from the ORIGINAL PLAN,
-# while preserving their original semantic intent.
+2. Check the COMPLETED WORK against every part of the query. Every required
+   part must be satisfied by a page whose status indicates success — not
+   merely attempted, not in progress, not partially done.
 
-# ================================================================
-# USER TASK
-# ================================================================
+3. If any required part of the query has no corresponding successful
+   completed entry, the query is NOT fulfilled, even if other parts were
+   completed successfully.
 
-# {task}
+4. If a page's status shows an error, a timeout, "element not found," or any
+   other failure, do not count that step as fulfilling the query, even if
+   it was the right page or the right attempt.
 
-# ================================================================
-# ORIGINAL PLAN
-# ================================================================
+5. Do not fulfill the query based on intention or partial progress (e.g.
+   "typed the search query" is not the same as "found and returned the
+   requested information").
 
-# {actions}
+6. If COMPLETED WORK is empty or does not mention anything relevant to the
+   ORIGINAL USER QUERY, the query is NOT fulfilled.
 
-# IMPORTANT:
+7. Do not guess or assume success beyond what the completed work explicitly
+   states.
 
-# The ORIGINAL PLAN defines what actions were intended.
+========================
+OUTPUT CONTRACT
+========================
 
-# Element indices contained in the ORIGINAL PLAN are STALE after a DOM change.
+Return ONLY one valid JSON object. No Markdown, no explanation, no
+reasoning shown, nothing before or after it.
 
-# However, non-indexed action information remains valid unless the browser state
-# shows that the action is no longer required.
+{{"completed": true}}
 
-# Examples:
+or
 
-# - click -> preserve the click goal, but remap its stale index
-# - type -> preserve the text and typing goal, but remap its stale index
-# - get_text -> preserve the extraction goal, but remap its stale index
-# - press_key -> preserve the key exactly; it does NOT require index remapping
+{{"completed": false}}
 
-# ================================================================
-# ALREADY COMPLETED
-# ================================================================
+Return only the JSON object.
+""".strip()   
 
-# {completed}
-
-# These actions are already complete.
-
-# DO NOT repeat them.
-
-# Use them only to understand the current browser state and determine what remains
-# unfinished.
-
-# ================================================================
-# UNFINISHED ACTIONS
-# ================================================================
-
-# {chr(10).join(f"{i + 1}. {description}" for i, description in enumerate(remaining_descriptions))}
-
-# These unfinished actions are authoritative.
-
-# Preserve their semantic action types unless the action is already unnecessary
-# because the browser state proves its intended effect already occurred.
-
-# Do NOT replace an unfinished action with a different convenient action.
-
-# For example:
-
-# If the unfinished action is:
-
-# {{"action": "press_key", "key": "Enter"}}
-
-# then the correct continuation is normally:
-
-# {{"action": "press_key", "key": "Enter"}}
-
-# NOT:
-
-# {{"action": "click", "index": "..." }}
-
-# even if clickable search suggestions or buttons are currently visible.
-
-# ================================================================
-# CURRENT AVAILABLE ELEMENTS
-# ================================================================
-
-# {elements}
-
-# Use CURRENT AVAILABLE ELEMENTS only when an unfinished action requires an
-# element index.
-
-# For indexed actions such as:
-
-# - click
-# - type
-# - get_text
-
-# the OLD index is invalid.
-
-# Find the correct CURRENT index by matching semantic meaning using:
-
-# - visible text
-# - role
-# - tag/type
-# - placeholder
-# - aria/accessibility label
-# - accessible name
-# - name
-# - value
-# - href
-# - title
-# - nearby context
-# - intended purpose
-
-# Never choose an element simply because its text resembles the task query.
-
-# The selected element must fulfill the SAME FUNCTION as the unfinished action.
-
-# ================================================================
-# NON-INDEXED ACTIONS
-# ================================================================
-
-# Some actions do NOT require DOM element remapping.
-
-# press_key is a non-indexed action.
-
-# If an unfinished action is:
-
-# {{"action": "press_key", "key": "<key>"}}
-
-# preserve it exactly as a press_key action.
-
-# Do NOT:
-
-# - search CURRENT AVAILABLE ELEMENTS for an index;
-# - convert it into a click;
-# - click a search suggestion;
-# - click an element merely because it appears relevant;
-# - invent an index.
-
-# The currently focused element may already be correct because a previous type
-# action was completed successfully.
-
-# If the completed action indicates that text was typed into an element and that
-# element became focused, a following press_key action should normally operate on
-# that current focus.
-
-# ================================================================
-# SEQUENCE RECOVERY
-# ================================================================
-
-# Recover unfinished actions in their ORIGINAL ORDER.
-
-# You MAY return multiple unfinished actions when they are all still valid in the
-# current browser state.
-
-# For every unfinished action:
-
-# 1. Preserve its action type and semantic purpose.
-
-# 2. If it requires an element:
-#    - discard its old index;
-#    - find the correct CURRENT index.
-
-# 3. If it does not require an element:
-#    - preserve its non-index arguments;
-#    - do not invent an index.
-
-# 4. Do not repeat completed actions.
-
-# 5. Stop the recovered sequence after an action that is expected to cause:
-#    - navigation;
-#    - form submission;
-#    - search submission;
-#    - major DOM replacement;
-#    - page reload;
-#    - a new page/tab.
-
-# A submission press_key such as Enter should normally be the last action in the
-# returned sequence.
-
-# ================================================================
-# IMPORTANT EXAMPLE
-# ================================================================
-
-# Suppose the ORIGINAL PLAN was:
-
-# [
-#   {{
-#     "action": "type",
-#     "index": "11",
-#     "text": "Albert Einstein"
-#   }},
-#   {{
-#     "action": "press_key",
-#     "key": "Enter"
-#   }}
-# ]
-
-# and the type action has already completed.
-
-# Then the remaining goal is NOT:
-
-# "find an Albert Einstein element and click it"
-
-# The remaining goal is:
-
-# "press Enter to submit the text already entered into the focused search field."
-
-# Correct output:
-
-# {{
-#   "actions": [
-#     {{
-#       "action": "press_key",
-#       "key": "Enter"
-#     }}
-#   ]
-# }}
-
-# Incorrect output:
-
-# {{
-#   "actions": [
-#     {{
-#       "action": "click",
-#       "index": "18"
-#     }}
-#   ]
-# }}
-
-# ================================================================
-# OUTPUT CONTRACT
-# ================================================================
-
-# Return exactly ONE valid JSON object.
-
-# No Markdown.
-# No explanation.
-# No reasoning.
-# No headings.
-# No text before or after the JSON.
-
-# Allowed action schemas:
-
-# click:
-
-# {{
-#   "action": "click",
-#   "index": "<current element index>"
-# }}
-
-# type:
-
-# {{
-#   "action": "type",
-#   "index": "<current element index>",
-#   "text": "<text>"
-# }}
-
-# get_text:
-
-# {{
-#   "action": "get_text",
-#   "index": "<current element index>"
-# }}
-
-# press_key:
-
-# {{
-#   "action": "press_key",
-#   "key": "<keyboard key>"
-# }}
-
-# Return recovered unfinished actions as:
-
-# {{
-#   "actions": [
-#     <one or more recovered actions>
-#   ]
-# }}
-
-# If all original actions are already complete:
-
-# {{
-#   "actions": []
-# }}
-
-# ================================================================
-# FINAL VALIDATION
-# ================================================================
-
-# Before returning:
-
-# 1. Compare ORIGINAL PLAN against ALREADY COMPLETED.
-
-# 2. Identify exactly which actions remain unfinished.
-
-# 3. Preserve the action type of every unfinished action.
-
-# 4. For click, type, and get_text:
-#    - discard stale indices;
-#    - use only CURRENT indices from CURRENT AVAILABLE ELEMENTS.
-
-# 5. For press_key:
-#    - preserve the key;
-#    - do NOT add an index;
-#    - do NOT convert it into a click.
-
-# 6. Never infer a new goal from autocomplete suggestions or other newly visible
-#    page elements.
-
-# 7. The CURRENT DOM is used to locate targets for unfinished indexed actions.
-#    It does NOT redefine the unfinished action itself.
-
-# Return only the JSON object.
-# """.strip()
 
 
 def get_mutation_prompt(task, incompleted, completed, actions, elements):
