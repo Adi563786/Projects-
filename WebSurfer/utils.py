@@ -1,111 +1,68 @@
+
 from playwright.async_api import Locator
 from collections import defaultdict
-from State import WebState
 import numpy as np
 from collections import defaultdict
-
-# async def get_page_details(page):
-#     elements = await page.evaluate("""
-#     () => {
-#         const nodes = document.querySelectorAll(
-#             'button,a,input,select,textarea,p,h1,h2,h3,h4,h5,h6,form,textbox,seaerchbox'
-#         );
-
-#         return Array.from(nodes)
-#             .filter(el => {
-#                 if (el.offsetParent === null) return false;
-
-#                 const text = (el.innerText || "").trim();
-#                 const placeholder = (el.placeholder || "").trim();
-
-#                 return text || placeholder;
-#             })
-#             .map((el, i) => {
-#                 el.setAttribute("data-agent-id", i);
-
-#                 return {
-#                     index: i,
-#                     role: el.tagName.toLowerCase(),
-
-#                     text: (el.innerText || "").trim(),
-#                     placeholder: (el.placeholder || "").trim(),
-
-#                     id: el.id || "",
-#                     name: el.name || "",
-#                     type: el.type || "",
-#                     value: el.value || "",
-#                     class: el.className || "",
-
-#                     ariaLabel: el.getAttribute("aria-label") || "",
-#                     title: el.title || "",
-
-#                     href: el.href || "",
-
-#                     verification: {
-#                         tag: el.tagName.toLowerCase(),
-#                         id: el.id || "",
-#                         class: el.className || "",
-#                         name: el.name || "",
-#                         type: el.type || "",
-#                         placeholder: el.placeholder || "",
-#                         text: (el.innerText || "").trim()
-#                     }
-#                 };
-#             });
-#     }
-#     """)
-
-#     d = defaultdict(dict)
-#     for e in elements:
-#         e["summary"] = (
-#                 "< "
-#                 + ", ".join(
-#                     part for part in [
-#                         f'role={e["role"]}' if e.get("role") else "",
-#                         f'index={e["index"]}' if e.get("index") is not None else "",
-#                         f'type={e["type"]}' if e.get("type") else "",
-#                         f'placeholder={e["placeholder"][:30]}' if e.get("placeholder") else "",
-#                         f'ariaLabel={e["ariaLabel"][:30]}' if e.get("ariaLabel") else "",
-#                         f'text={e["text"][:40]}' if e.get("text") else "",
-#                         f'value={e["value"][:40]}' if e.get("value") else "",
-#                         f'title={e["title"][:40]}' if e.get("title") else "",
-#                         f'id={e["id"][:40]}' if e.get("id") else "",
-#                         f'class={e["class"][:40]}' if e.get("class") else "",
-#                     ]
-#                     if part
-#                 )
-#                 + " >"
-#             )
-#         d[e["role"]][e["index"]] = e
-
-
-#     return d
-
-
 async def get_page_details(page):
-    elements = await page.evaluate("""
+
+    all_elements = defaultdict(dict)
+    all_forms = []
+
+    frames = page.frames
+
+    global_id = 0
+
+    for frame_index, frame in enumerate(frames):
+
+        try:
+            result = await frame.evaluate("""
 () => {
 
-            const isVisibleInViewport = (el) => {
-            const style = window.getComputedStyle(el);
-            const rect = el.getBoundingClientRect();
+    const isVisible = (el) => {
+        if (!el || !(el instanceof Element)) {
+            return false;
+        }
 
-            const isRendered =
-                style.visibility !== "hidden" &&
-                style.display !== "none" &&
-                rect.width > 0 &&
-                rect.height > 0;
+        const rect = el.getBoundingClientRect();
 
-            const isInViewport =
-                rect.bottom > 0 &&
-                rect.right > 0 &&
-                rect.top < window.innerHeight &&
-                rect.left < window.innerWidth;
+        if (rect.width <= 0 || rect.height <= 0) {
+            return false;
+        }
 
-            return isRendered && isInViewport;
-        };
+        let current = el;
 
-    const interactive = `
+        while (
+            current &&
+            current !== document.documentElement
+        ) {
+            const style = window.getComputedStyle(current);
+
+            if (
+                style.display === "none" ||
+                style.visibility === "hidden" ||
+                style.visibility === "collapse" ||
+                parseFloat(style.opacity || "1") <= 0
+            ) {
+                return false;
+            }
+
+            current = current.parentElement;
+        }
+
+        return (
+            rect.bottom > 0 &&
+            rect.right > 0 &&
+            rect.top < window.innerHeight &&
+            rect.left < window.innerWidth
+        );
+    };
+
+
+    // ==========================================
+    // ELEMENTS
+    // ==========================================
+
+    const selector = `
         button,
         a,
         input,
@@ -114,238 +71,883 @@ async def get_page_details(page):
         option,
         summary,
         details,
-        p,h1,h2,h3,h,h4,h5,h6,
+        p,
+        h1,h2,h3,h4,h5,h6,
         [role],
         [tabindex],
         [contenteditable="true"]
     `;
 
-    const nodes = [...document.querySelectorAll(interactive)];
 
-    return nodes
-        .filter(el => isVisibleInViewport(el))
-        .map((el, i) => {
+    const nodes = [
+        ...document.querySelectorAll(selector)
+    ].filter(isVisible);
 
-            if (!el.hasAttribute("data-agent-id")) {
-                el.setAttribute("data-agent-id",i);
-            }
 
-            const rect = el.getBoundingClientRect();
+    const elements = nodes.map((el, localIndex) => {
 
-            const role =
-                el.getAttribute("role") ||
+        const tag = el.tagName.toLowerCase();
+
+        const role =
+            el.getAttribute("role") || tag;
+
+        let actions = [];
+
+        if (
+            tag === "input" ||
+            tag === "textarea" ||
+            role === "textbox"
+        ) {
+            actions = ["click", "type"];
+        }
+
+        else if (
+            tag === "select" ||
+            role === "combobox"
+        ) {
+            actions = ["click", "select"];
+        }
+
+        else if (
+            tag === "button" ||
+            tag === "a" ||
+            role === "button" ||
+            role === "checkbox" ||
+            role === "radio"
+        ) {
+            actions = ["click"];
+        }
+
+        else if (
+            ["p", "h1", "h2", "h3", "h4", "h5", "h6"]
+                .includes(tag)
+        ) {
+            actions = ["read text"];
+        }
+
+        else {
+            actions = ["click"];
+        }
+
+
+        return {
+            localIndex,
+
+            role,
+            tag,
+
+            text:
+                (el.innerText || "").trim(),
+
+            placeholder:
+                el.getAttribute("placeholder") || "",
+
+            value:
+                "value" in el
+                    ? String(el.value || "")
+                    : "",
+
+            type:
+                el.getAttribute("type") || "",
+
+            name:
+                el.getAttribute("name") || "",
+
+            domId:
+                el.id || "",
+
+            className:
+                typeof el.className === "string"
+                    ? el.className
+                    : "",
+
+            ariaLabel:
+                el.getAttribute("aria-label") || "",
+
+            title:
+                el.getAttribute("title") || "",
+
+            href:
+                el.href || "",
+
+            enabled:
+                !el.disabled,
+
+            checked:
+                !!el.checked,
+
+            selected:
+                !!el.selected,
+
+            readonly:
+                !!el.readOnly,
+
+            required:
+                !!el.required,
+
+            actions
+        };
+    });
+
+
+    // ==========================================
+    // FORM DETECTION
+    // ==========================================
+
+    const CONTROL_SELECTOR = `
+        input:not([type="hidden"]),
+        textarea,
+        select,
+        button,
+        [contenteditable="true"],
+        [role="textbox"],
+        [role="combobox"],
+        [role="checkbox"],
+        [role="radio"],
+        [role="switch"],
+        [role="button"]
+    `;
+
+
+    const describeControl = (el) => {
+
+        const parts = [];
+
+        const tag =
+            el.tagName.toLowerCase();
+
+        const type =
+            el.getAttribute("type");
+
+        const name =
+            el.getAttribute("name");
+
+        const placeholder =
+            el.getAttribute("placeholder");
+
+        const aria =
+            el.getAttribute("aria-label");
+
+        const text =
+            (el.innerText || "").trim();
+
+        parts.push(`tag=${tag}`);
+
+        if (type)
+            parts.push(`type=${type}`);
+
+        if (name)
+            parts.push(`name="${name}"`);
+
+        if (placeholder)
+            parts.push(
+                `placeholder="${placeholder}"`
+            );
+
+        if (aria)
+            parts.push(
+                `aria="${aria}"`
+            );
+
+        if (text)
+            parts.push(
+                `text="${text.slice(0, 80)}"`
+            );
+
+        if (el.required)
+            parts.push("required=true");
+
+        if (el.checked)
+            parts.push("checked=true");
+
+        return `< ${parts.join(", ")} >`;
+    };
+
+
+    const forms = [];
+
+
+    // ------------------------------------------
+    // Native forms
+    // ------------------------------------------
+
+    const nativeForms = [
+        ...document.querySelectorAll("form")
+    ];
+
+    nativeForms.forEach((form, index) => {
+
+        const controls = [
+            ...form.querySelectorAll(
+                CONTROL_SELECTOR
+            )
+        ].filter(isVisible);
+
+        if (!controls.length) {
+            return;
+        }
+
+        forms.push({
+            type: "native",
+            controls:
+                controls.map(describeControl)
+        });
+    });
+
+
+    // ------------------------------------------
+    // Semantic / modern JS forms
+    // ------------------------------------------
+
+    const candidates = [
+        ...document.querySelectorAll(`
+            [role="form"],
+            fieldset,
+            section,
+            [role="dialog"],
+            main,
+            div
+        `)
+    ];
+
+
+    const seenControls = new Set();
+
+
+    for (const container of candidates) {
+
+        const controls = [
+            ...container.querySelectorAll(
+                CONTROL_SELECTOR
+            )
+        ].filter(isVisible);
+
+
+        const editable = controls.filter(el => {
+
+            const tag =
                 el.tagName.toLowerCase();
 
-            let actions = [];
+            const role =
+                el.getAttribute("role");
 
-            switch (el.tagName.toLowerCase()) {
-                case "input":
-                    actions = ["click","type"];
-                    break;
-
-                case "textarea":
-                    actions = ["click","type"];
-                    break;
-
-                case "select":
-                    actions = ["click","select"];
-                    break;
-
-                case "button":
-                    actions = ["click"];
-                    break;
-
-                case "a":
-                    actions = ["click"];
-                    break;
-                case "p":
-                    actions = ["read text"];
-                    break;
-                case "h1":
-                    actions = ["read text"];
-                    break;
-                case "h2":
-                    actions = ["read text"];
-                    break;
-                case "h3":
-                    actions = ["read text"];
-                    break;
-                case "h4":
-                    actions = ["read text"];
-                    break;
-                case "h5":
-                    actions = ["read text"];
-                    break;
-                case "h6":
-                    actions = ["read text"];
-                    break;
-                default:
-                    actions = ["click"];
-            }
-
-            return {
-
-                id: el.getAttribute("data-agent-id"),
-
-                role,
-                tag: el.tagName.toLowerCase(),
-
-                text: (el.innerText || "").trim(),
-                p:(el.p|| "").trim(),
-                h1:(el.h1|| "").trim(),
-                h2:(el.h2|| "").trim(),
-                h3:(el.h3|| "").trim(),
-                h4:(el.h4|| "").trim(),
-                h5:(el.h5|| "").trim(),
-                h6:(el.h6|| "").trim(),
-                placeholder: el.placeholder || "",
-
-                value: el.value || "",
-
-                type: el.type || "",
-
-                name: el.name || "",
-
-                domId: el.id || "",
-
-                className: el.className || "",
-
-                ariaLabel:
-                    el.getAttribute("aria-label") || "",
-
-                title: el.title || "",
-
-                href: el.href || "",
-
-                enabled: !el.disabled,
-
-                checked: !!el.checked,
-
-                selected: !!el.selected,
-
-                readonly: !!el.readOnly,
-
-                required: !!el.required,
-
-                focused:
-                    document.activeElement === el,
-
-                actions,
-
-                
-            };
+            return (
+                tag === "input" ||
+                tag === "textarea" ||
+                tag === "select" ||
+                role === "textbox" ||
+                role === "combobox" ||
+                role === "checkbox" ||
+                role === "radio"
+            );
         });
+
+
+        if (editable.length < 1) {
+            continue;
+        }
+
+
+        /*
+         * Create a signature to prevent the same form
+         * being reported through several nested divs.
+         */
+        const signature = editable
+            .map(el =>
+                `${el.tagName}:${el.name}:${el.id}:${el.getAttribute("aria-label")}`
+            )
+            .join("|");
+
+
+        if (seenControls.has(signature)) {
+            continue;
+        }
+
+        seenControls.add(signature);
+
+
+        forms.push({
+            type: "semantic",
+            controls:
+                controls.map(describeControl)
+        });
+    }
+
+
+    return {
+        elements,
+        forms
+    };
 }
 """)
 
-    grouped = defaultdict(dict)
 
-    TEXT_TAGS = {"p", "h1", "h2", "h3", "h4", "h5", "h6"}
+        except Exception as e:
+            print(
+                f"Skipping frame {frame_index}: {e}"
+            )
+            continue
 
-    for e in elements:
 
-        # Allow more text for readable/content elements
-        text_limit = 400 if e["tag"] in TEXT_TAGS else 40
+        # ==========================================
+        # FRAME INFORMATION
+        # ==========================================
 
-        summary_parts = [
+        frame_url = frame.url
 
-            f'role={e["role"]}',
+        try:
+            frame_name = frame.name
+        except Exception:
+            frame_name = ""
 
-            f'id={e["id"][:8]}',
 
-            f'tag={e["tag"]}' if e["tag"] else "",
-            f'type={e["type"]}' if e["type"] else "",
+        # ==========================================
+        # ELEMENTS
+        # ==========================================
 
-            f'text="{e["text"][:text_limit]}"'
-                if e["text"] else "",
+        for e in result.get("elements", []):
 
-            f'name="{e["name"][:40]}"'
-                if e["name"] else "",
+            element_id = str(global_id)
+            global_id += 1
 
-            f'domId="{e["domId"]}"'
-                if e["domId"] else "",
+            e["id"] = element_id
+            e["frameIndex"] = frame_index
+            e["frameUrl"] = frame_url
 
-            f'className="{e["className"]}"'
-                if e["className"] else "",
+            text_limit = (
+                400
+                if e["tag"] in {
+                    "p",
+                    "h1",
+                    "h2",
+                    "h3",
+                    "h4",
+                    "h5",
+                    "h6"
+                }
+                else 80
+            )
 
-            f'href="{e["href"]}"'
-                if e["href"] else "",
 
-            f'enabled="{e["enabled"]}"'
-                if e["enabled"] else "",
+            summary_parts = [
 
-            f'checked="{e["checked"]}"'
-                if e["checked"] else "",
+                f'role={e["role"]}',
 
-            f'selected="{e["selected"]}"'
-                if e["selected"] else "",
+                f'id={element_id}',
 
-            f'required="{e["required"]}"'
-                if e["required"] else "",
+                f'frame={frame_index}',
 
-            f'placeholder="{e["placeholder"][:40]}"'
-                if e["placeholder"] else "",
+                f'tag={e["tag"]}',
 
-            f'aria="{e["ariaLabel"][:200]}"'
-                if e["ariaLabel"] else "",
+                f'type={e["type"]}'
+                    if e["type"]
+                    else "",
 
-            f'value="{e["value"][:30]}"'
-                if e["value"] else "",
+                f'text="{e["text"][:text_limit]}"'
+                    if e["text"]
+                    else "",
 
-            f'actions={",".join(e["actions"])}',
+                f'name="{e["name"][:60]}"'
+                    if e["name"]
+                    else "",
 
-          
-        ]
+                f'placeholder="{e["placeholder"][:100]}"'
+                    if e["placeholder"]
+                    else "",
 
-        e["summary"] = "< " + ", ".join(
-            p for p in summary_parts if p
-        ) + " >"
+                f'aria="{e["ariaLabel"][:150]}"'
+                    if e["ariaLabel"]
+                    else "",
 
-        grouped[e["role"]][e["id"]] = e
+                f'value="{e["value"][:80]}"'
+                    if e["value"]
+                    else "",
 
-    return grouped
+                f'href="{e["href"]}"'
+                    if e["href"]
+                    else "",
 
-async def get_locators(page, element, ids):
-    role = ""
-    if isinstance(ids,int):
-        ids=str(ids)
-    for k, v in element.items():
-        if ids in v.keys():
-            role = k
-            break
-    
-    v = element[role][ids]
+                f'required={e["required"]}'
+                    if e["required"]
+                    else "",
+
+                f'actions={",".join(e["actions"])}'
+            ]
+
+
+            e["summary"] = (
+                "< "
+                + ", ".join(
+                    x
+                    for x in summary_parts
+                    if x
+                )
+                + " >"
+            )
+
+
+            all_elements[
+                e["role"]
+            ][element_id] = e
+
+
+        # ==========================================
+        # FORMS
+        # ==========================================
+
+        for form_index, form in enumerate(
+            result.get("forms", [])
+        ):
+
+            controls = ", ".join(
+                form["controls"]
+            )
+
+            all_forms.append(
+                f'FRAME {frame_index} '
+                f'url="{frame_url}" '
+                f'FORM {form_index + 1} '
+                f'type={form["type"]} '
+                f'controls=[{controls}]'
+            )
+
+
+    forms_text = (
+        "\\n".join(all_forms)
+        if all_forms
+        else "NO VISIBLE FORMS"
+    )
+
+
+    return {
+        "elements": all_elements,
+        "forms": forms_text
+    }
+
+async def get_element_data(elements, element_id):
+    for role, role_elements in elements.items():
+        if element_id in role_elements:
+            return role_elements[element_id]
+
+    return None
+def escape_css_attr(value):
+    """
+    Escape a value used inside:
+    [attr="value"]
+    """
+    if value is None:
+        return ""
+
+    return (
+        str(value)
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\A ")
+        .replace("\r", "")
+    )
+
+
+def escape_css_id(value):
+    """
+    Basic CSS ID escaping.
+
+    Prefer attribute selectors or Playwright semantic locators when
+    possible. This is mainly a fallback.
+    """
+    if value is None:
+        return ""
+
+    value = str(value)
+
+    special = [
+        "\\", "#", ".", ":", "[", "]",
+        "(", ")", " ", "/", "@"
+    ]
+
+    for char in special:
+        value = value.replace(char, "\\" + char)
+
+    return value
+
+
+def find_element_by_agent_id(elements, element_id):
+    """
+    Find element metadata from grouped elements.
+
+    Example structure:
+    {
+        "input": {
+            "29": {...}
+        },
+        "button": {
+            "31": {...}
+        }
+    }
+    """
+
+    element_id = str(element_id)
+
+    for role, role_elements in elements.items():
+        if element_id in role_elements:
+            return role_elements[element_id]
+
+    return None
+async def add_unique_locator(locators, locator, description=""):
+    """
+    Add locator only when it currently resolves to exactly one element.
+    """
+
+    try:
+        count = await locator.count()
+
+        if count == 1:
+            locators.append({
+                "locator": locator,
+                "description": description
+            })
+            return True
+
+    except Exception:
+        pass
+
+    return False
+def get_element_frame(page, element):
+    """
+    Resolve the Playwright Frame belonging to an extracted element.
+    """
+
+    frame_index = element.get("frameIndex", 0)
+
+    try:
+        frame_index = int(frame_index)
+    except Exception:
+        frame_index = 0
+
+    frames = page.frames
+
+    if frame_index < 0 or frame_index >= len(frames):
+        return None
+
+    return frames[frame_index]
+async def get_locators(page, elements, element_id):
+
+    element = find_element_by_agent_id(
+        elements,
+        element_id
+    )
+
+    if not element:
+        print(
+            f"[locator] element id={element_id} "
+            "not found in current elements"
+        )
+        return []
+
+    # ============================================================
+    # FRAME
+    # ============================================================
+
+    frame = get_element_frame(page, element)
+
+    if not frame:
+        print(
+            f"[locator] frame not found for "
+            f"element={element_id}, "
+            f"frameIndex={element.get('frameIndex')}"
+        )
+        return []
+
+    # ============================================================
+    # ELEMENT METADATA
+    # ============================================================
+
+    tag = element.get("tag", "")
+    role = element.get("role", "")
+
+    dom_id = element.get("domId", "")
+    name = element.get("name", "")
+
+    aria = element.get("ariaLabel", "")
+    placeholder = element.get("placeholder", "")
+
+    text = element.get("text", "")
+    href = element.get("href", "")
+
+    input_type = element.get("type", "")
+
+    local_id = element.get("localId")
+
+    # Your current extractor may only have localIndex.
+    if local_id is None:
+        local_id = element.get("localIndex")
+
     locators = []
 
-    # PRIMARY: data-agent-id — unique by construction, always try this first
-    locators.append(page.locator(f'[data-agent-id="{ids}"]'))
+    # ============================================================
+    # 1. INJECTED AGENT ID
+    # Best locator when available.
+    # ============================================================
 
-    # fallback chain — only matters if data-agent-id is gone (element was recreated)
-    idv = v.get("id", "")
-    name = v.get("name", "")
-    placeholder = v.get("placeholder", "")
-    arialabel = v.get("ariaLabel", "")
-    text = v.get("text", "")
-    cls = v.get("class", "")
-    tag = v.get("role", "")
+    if local_id is not None:
 
-    if idv:
-        locators.append(page.locator(f'#{idv}'))
-    if name:
-        locators.append(page.locator(f'[name="{name}"]'))
+        local_id_str = escape_css_attr(
+            str(local_id)
+        )
+
+        locator = frame.locator(
+            f'[data-agent-local-id="{local_id_str}"]'
+        )
+
+        found = await add_unique_locator(
+            locators,
+            locator,
+            "data-agent-local-id"
+        )
+
+        # If your extraction actually attaches this attribute,
+        # this should normally be enough.
+        if found:
+            return locators
+
+    # ============================================================
+    # 2. TAG + DOM ID
+    #
+    # IMPORTANT:
+    # Do NOT use only "#location".
+    #
+    # Google example:
+    #
+    # <symbol id="location">
+    # <input id="location">
+    #
+    # input#location is unique.
+    # ============================================================
+
+    if dom_id and tag:
+
+        escaped_id = escape_css_id(dom_id)
+
+        await add_unique_locator(
+            locators,
+            frame.locator(
+                f"{tag}#{escaped_id}"
+            ),
+            "tag+id"
+        )
+
+    # ============================================================
+    # 3. TAG + NAME
+    # ============================================================
+
+    if tag and name:
+
+        escaped_name = escape_css_attr(name)
+
+        await add_unique_locator(
+            locators,
+            frame.locator(
+                f'{tag}[name="{escaped_name}"]'
+            ),
+            "tag+name"
+        )
+
+    # ============================================================
+    # 4. ACCESSIBLE LABEL
+    # Excellent for inputs.
+    #
+    # Google Careers:
+    # aria-label="Where?"
+    # ============================================================
+
+    if aria:
+
+        try:
+            await add_unique_locator(
+                locators,
+                frame.get_by_label(
+                    aria,
+                    exact=True
+                ),
+                "aria-label"
+            )
+        except Exception:
+            pass
+
+    # ============================================================
+    # 5. PLACEHOLDER
+    # ============================================================
+
     if placeholder:
-        locators.append(page.get_by_placeholder(placeholder))
-    if arialabel:
-        locators.append(page.get_by_label(arialabel))
-    if text:
-        locators.append(page.get_by_text(text, exact=True))
-    if cls and tag:
-        cls_selector = ".".join(c for c in cls.split() if c)
-        locators.append(page.locator(f'{tag}.{cls_selector}'))
-    if tag:
-        locators.append(page.locator(tag))
 
-    return locators
+        try:
+            await add_unique_locator(
+                locators,
+                frame.get_by_placeholder(
+                    placeholder,
+                    exact=True
+                ),
+                "placeholder"
+            )
+        except Exception:
+            pass
+
+    # ============================================================
+    # 6. ROLE + ACCESSIBLE NAME
+    # ============================================================
+
+    role_map = {
+        "button": "button",
+        "checkbox": "checkbox",
+        "radio": "radio",
+        "textbox": "textbox",
+        "combobox": "combobox",
+        "link": "link",
+    }
+
+    normalized_role = role_map.get(role)
+
+    if not normalized_role:
+
+        if tag == "button":
+            normalized_role = "button"
+
+        elif tag == "a":
+            normalized_role = "link"
+
+        elif tag == "textarea":
+            normalized_role = "textbox"
+
+        elif (
+            tag == "input"
+            and input_type
+            not in {
+                "checkbox",
+                "radio",
+                "button",
+                "submit"
+            }
+        ):
+            normalized_role = "textbox"
+
+        elif (
+            tag == "input"
+            and input_type == "checkbox"
+        ):
+            normalized_role = "checkbox"
+
+        elif (
+            tag == "input"
+            and input_type == "radio"
+        ):
+            normalized_role = "radio"
+
+    accessible_name = (
+        aria
+        or text
+        or placeholder
+    )
+
+    if normalized_role and accessible_name:
+
+        try:
+            await add_unique_locator(
+                locators,
+                frame.get_by_role(
+                    normalized_role,
+                    name=accessible_name,
+                    exact=True
+                ),
+                "role+name"
+            )
+        except Exception:
+            pass
+
+    # ============================================================
+    # 7. HREF
+    # ============================================================
+
+    if tag == "a" and href:
+
+        escaped_href = escape_css_attr(href)
+
+        await add_unique_locator(
+            locators,
+            frame.locator(
+                f'a[href="{escaped_href}"]'
+            ),
+            "href"
+        )
+
+    # ============================================================
+    # 8. TEXT FOR BUTTON / LINK
+    # ============================================================
+
+    if text and tag in {"button", "a"}:
+
+        try:
+            await add_unique_locator(
+                locators,
+                frame.get_by_text(
+                    text,
+                    exact=True
+                ),
+                "exact-text"
+            )
+        except Exception:
+            pass
+
+    # ============================================================
+    # 9. COMBINED INPUT ATTRIBUTES
+    # Strong fallback.
+    # ============================================================
+
+    if tag == "input":
+
+        attrs = ["input"]
+
+        if input_type:
+            attrs.append(
+                f'[type="{escape_css_attr(input_type)}"]'
+            )
+
+        if name:
+            attrs.append(
+                f'[name="{escape_css_attr(name)}"]'
+            )
+
+        if aria:
+            attrs.append(
+                f'[aria-label="{escape_css_attr(aria)}"]'
+            )
+
+        if placeholder:
+            attrs.append(
+                f'[placeholder="{escape_css_attr(placeholder)}"]'
+            )
+
+        selector = "".join(attrs)
+
+        await add_unique_locator(
+            locators,
+            frame.locator(selector),
+            "combined-input"
+        )
+
+    # ============================================================
+    # RETURN LOCATORS ONLY
+    # ============================================================
+
+    print(
+        f"[locator] element={element_id} "
+        f"frame={element.get('frameIndex', 0)} "
+        f"candidates="
+        f"{[x['description'] for x in locators]}"
+    )
+
+    return [
+        x["locator"]
+        for x in locators
+    ]
 
 async def resolve_locator_by_vote(locators):
     groups = []  # list of {"handle": handle, "locators": [locators...]}
@@ -403,45 +1005,6 @@ async def click_and_check_mutation(page, locator, timeout=1000):
     await page.evaluate("if (window.__domObserver) window.__domObserver.disconnect();")
 
     return mutated
-
-# def get_k_relevant_elements(task, elements, embedder, top_k=15):
-#     def flatten_elements(elements_dict):
-#         flatter = {}
-#         for role, items in elements_dict.items():
-#             flat = {}
-#             for idx, el in items.items():
-#                 text = el.get("text", "").strip()
-#                 aria_label = el.get("ariaLabel", "").strip()
-#                 if text or aria_label:  # skip elements with nothing to embed
-#                     flat[el["index"]] =el['summary'][1:-1]
-#             if flat:
-#                 flatter[role] = flat
-#         return flatter
-
-#     flattened = flatten_elements(elements)
-#     task_embedding = embedder.encode([task])[0]
-
-#     def cosine_sim(a, b):
-#         return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
-
-#     result = {}
-#     for role, items in flattened.items():
-#         entries = list(items.values())
-#         #texts = [e["text"] + " " + e["aria_label"] for e in entries]
-#         texts =[]
-#         for e in entries:
-#             texts.append(e)
-#         embeddings = embedder.encode(texts)  # embed once per role, in one batch
-
-#         scored = [
-#             (cosine_sim(task_embedding, emb), el)
-#             for emb, el in zip(embeddings, entries)
-#         ]
-#         scored.sort(key=lambda x: x[0], reverse=True)
-
-#         result[role] = [el for score, el in scored[:top_k]]
-
-#     return result
 import numpy as np
 from collections import defaultdict
 

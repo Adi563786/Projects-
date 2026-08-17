@@ -1,7 +1,6 @@
-from typing import TypedDict , List ,Set ,Sequence , Annotated ,Dict,Any
+from typing import TypedDict , List ,Set ,Sequence , Annotated ,Dict,Any,Literal
 from langgraph.graph import add_messages
 from langchain_core.messages import BaseMessage
-from ChatModel import OpenVINOChatModel
 
 def append_or_replace_last(existing: list, new) -> list:
     """Append a new PageState, or if new is a partial update dict, merge it into the last entry."""
@@ -13,7 +12,8 @@ def append_or_replace_last(existing: list, new) -> list:
     merged_last = {**existing[-1], **new}
     return existing[:-1] + [merged_last]
 
-
+class Task(TypedDict):
+    pageTask:str
 class PageState(TypedDict):
     pageTask:str
     url:str
@@ -27,6 +27,9 @@ class PageState(TypedDict):
     isCaptcha:bool=False
     pageResult:List[Dict[str,str]]
     top_k_elements:Dict[str,Dict[str,Dict[str,str]]]
+    navigation_type:Literal["new_tab","same_tab","never_navigated"]
+    forms:Annotated[List[str],add_messages]
+    
 
 
 class WebState(TypedDict):
@@ -39,5 +42,4 @@ class WebState(TypedDict):
     pageData:Annotated[List[PageState],append_or_replace_last]
     embedder:Any
     taskCompleted:bool=False
-
-    
+    taskIncompleteReason:str
